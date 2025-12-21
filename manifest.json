@@ -1,0 +1,9 @@
+{
+  "domain": "temperature_history_stats",
+  "name": "Temperature History Stats",
+  "documentation": "https://example.invalid/temperature_history_stats",
+  "version": "0.1.0",
+  "requirements": [],
+  "codeowners": [],
+  "iot_class": "calculated"
+}
