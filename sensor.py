@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from functools import partial
 import logging
 
 _LOGGER = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -32,6 +34,9 @@ from .const import (
     DEFAULT_NAME,
     DEFAULT_SCAN_INTERVAL,
 )
+
+STORAGE_VERSION = 1
+STORAGE_KEY = "temperature_history_stats"
 
 # YAML config schema for the platform (temperature source, window, scan interval).
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
@@ -49,6 +54,8 @@ STAT_LABELS = {
     "min": "Min",
     "max": "Max",
     "range": "Range",
+    "all_time_min": "All-time Min",
+    "all_time_max": "All-time Max",
 }
 
 async def async_setup_platform(
@@ -79,11 +86,18 @@ async def async_setup_platform(
         scan_interval,
     )
 
+    store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+    store_data = await store.async_load() or {}
+    entity_store = store_data.get(entity_id, {})
+    all_time_min = entity_store.get("all_time_min")
+    all_time_max = entity_store.get("all_time_max")
+
     async def _async_update_stats() -> dict[str, Any]:
         """Fetch history and compute statistics for the configured window.
 
         Uses the `entity_id`, `hours`, and `hass` from the outer scope.
         """
+        nonlocal all_time_min, all_time_max
         # Query recorder history for the rolling window and compute stats.
         now = dt_util.utcnow()
         start = now - timedelta(hours=hours)
@@ -137,6 +151,23 @@ async def async_setup_platform(
                 continue
             values.append(value)
 
+        if values:
+            updated = False
+            window_min = min(values)
+            window_max = max(values)
+            if all_time_min is None or window_min < all_time_min:
+                all_time_min = window_min
+                updated = True
+            if all_time_max is None or window_max > all_time_max:
+                all_time_max = window_max
+                updated = True
+            if updated:
+                store_data[entity_id] = {
+                    "all_time_min": all_time_min,
+                    "all_time_max": all_time_max,
+                }
+                await store.async_save(store_data)
+
         _LOGGER.debug(
             "Collected %s samples for %s between %s and %s",
             len(values),
@@ -152,6 +183,8 @@ async def async_setup_platform(
                 "min": None,
                 "max": None,
                 "range": None,
+                "all_time_min": all_time_min,
+                "all_time_max": all_time_max,
                 "count": 0,
                 "unit": unit,
                 "start": start,
@@ -166,6 +199,8 @@ async def async_setup_platform(
             "min": min_value,
             "max": max_value,
             "range": max_value - min_value,
+            "all_time_min": all_time_min,
+            "all_time_max": all_time_max,
             "count": len(values),
             "unit": unit,
             "start": start,
@@ -189,6 +224,8 @@ async def async_setup_platform(
             TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "min"),
             TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "max"),
             TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "range"),
+            TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "all_time_min"),
+            TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "all_time_max"),
         ]
     )
 
@@ -282,4 +319,3 @@ def _format_dt(value: datetime | None) -> str | None:
     if value is None:
         return None
     return dt_util.as_local(value).isoformat()
-from functools import partial
