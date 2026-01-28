@@ -15,6 +15,7 @@ import voluptuous as vol
 from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.recorder import history as recorder_history
 from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
     CONF_ENTITY_ID,
@@ -33,6 +34,7 @@ from .const import (
     DEFAULT_HOURS,
     DEFAULT_NAME,
     DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
 )
 
 STORAGE_VERSION = 1
@@ -58,34 +60,13 @@ STAT_LABELS = {
     "all_time_max": "All-time Max",
 }
 
-async def async_setup_platform(
+async def async_create_coordinator(
     hass: HomeAssistant,
-    config: dict[str, Any],
-    async_add_entities: AddEntitiesCallback,
-    discovery_info: dict[str, Any] | None = None,
-) -> None:
-    """Set up temperature history stats sensors from YAML.
-
-    Args:
-        hass: Home Assistant instance.
-        config: Platform configuration for the temperature stats sensor.
-        async_add_entities: Callback to register created entities.
-        discovery_info: Optional discovery payload (unused for YAML config).
-    """
-    _LOGGER.info("async_setup_platform called for %s", config.get(CONF_ENTITY_ID))
-    entity_id = config[CONF_ENTITY_ID]
-    name = config[CONF_NAME]
-    hours = config[CONF_HOURS]
-    scan_interval = config[CONF_SCAN_INTERVAL]
-
-    _LOGGER.debug(
-        "Setting up temperature_history_stats: entity_id=%s name=%s hours=%s scan_interval=%s",
-        entity_id,
-        name,
-        hours,
-        scan_interval,
-    )
-
+    entity_id: str,
+    hours: int,
+    scan_interval: timedelta,
+) -> DataUpdateCoordinator:
+    """Create a coordinator that computes rolling stats for one entity."""
     store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
     store_data = await store.async_load() or {}
     entity_store = store_data.get(entity_id, {})
@@ -93,10 +74,7 @@ async def async_setup_platform(
     all_time_max = entity_store.get("all_time_max")
 
     async def _async_update_stats() -> dict[str, Any]:
-        """Fetch history and compute statistics for the configured window.
-
-        Uses the `entity_id`, `hours`, and `hass` from the outer scope.
-        """
+        """Fetch history and compute statistics for the configured window."""
         nonlocal all_time_min, all_time_max
         # Query recorder history for the rolling window and compute stats.
         now = dt_util.utcnow()
@@ -207,8 +185,8 @@ async def async_setup_platform(
             "end": now,
         }
 
-    # Coordinator handles periodic refresh for all three sensors.
-    coordinator = DataUpdateCoordinator(
+    # Coordinator handles periodic refresh for all sensors.
+    return DataUpdateCoordinator(
         hass,
         _LOGGER,
         name="temperature_history_stats",
@@ -216,7 +194,68 @@ async def async_setup_platform(
         update_interval=scan_interval,
     )
 
-    await coordinator.async_config_entry_first_refresh()
+
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: dict[str, Any],
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: dict[str, Any] | None = None,
+) -> None:
+    """Set up temperature history stats sensors from YAML.
+
+    Args:
+        hass: Home Assistant instance.
+        config: Platform configuration for the temperature stats sensor.
+        async_add_entities: Callback to register created entities.
+        discovery_info: Optional discovery payload (unused for YAML config).
+    """
+    _LOGGER.info("async_setup_platform called for %s", config.get(CONF_ENTITY_ID))
+    entity_id = config[CONF_ENTITY_ID]
+    name = config[CONF_NAME]
+    hours = config[CONF_HOURS]
+    scan_interval = config[CONF_SCAN_INTERVAL]
+
+    _LOGGER.debug(
+        "Setting up temperature_history_stats: entity_id=%s name=%s hours=%s scan_interval=%s",
+        entity_id,
+        name,
+        hours,
+        scan_interval,
+    )
+
+    coordinator = await async_create_coordinator(
+        hass,
+        entity_id,
+        hours,
+        scan_interval,
+    )
+
+    # Use async_refresh here to avoid ConfigEntryError in YAML setups.
+    await coordinator.async_refresh()
+
+    async_add_entities(
+        [
+            TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "average"),
+            TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "min"),
+            TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "max"),
+            TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "range"),
+            TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "all_time_min"),
+            TemperatureHistoryStatSensor(coordinator, entity_id, name, hours, "all_time_max"),
+        ]
+    )
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up temperature history stats sensors from a config entry."""
+    entry_data = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry_data["coordinator"]
+    entity_id = entry_data["entity_id"]
+    name = entry_data["name"]
+    hours = entry_data["hours"]
 
     async_add_entities(
         [
