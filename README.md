@@ -1,5 +1,5 @@
 # ha_temp_history
-Home assistant extension to analyze temperature history
+Home assistant extension to analyze temperature history. Currently shows max, min and average for the time window. You can configure length of the time window. Also all-time max and min are stored persistently.
 
 Example how to setup in configuration.yaml
 ```
